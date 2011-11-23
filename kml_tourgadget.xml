@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module>
+<!--
+Copyright 2009 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+  <ModulePrefs
+    title="Embedded Tour Player"
+    title_url="http://www.gmodules.com/ig/creator?synd=open&amp;url=http://code.google.com/apis/kml/embed/tourgadget.xml"
+    directory_title="Embedded Tour Player"
+    thumbnail="http://code.google.com/apis/kml/embed/res/tourgadget-thumb.png"
+    screenshot="http://code.google.com/apis/kml/embed/res/tourgadget-screen.png"
+    author="Roman Nurik"
+    author_email="api.roman.public+tourgadget@gmail.com"
+    author_affiliation="Google"
+    width="500"
+    height="400"
+    description="Embed a KML-based tour in your page using the Google Earth Plugin!">
+    <Locale lang="en" country="us"/>
+  </ModulePrefs>
+  
+  <UserPref name="kml_url" display_name="KML URL (should contain a Tour)"/>
+  <UserPref name="tour_index" display_name="Play n'th tour in file" default_value="1" datatype="string"/>
+  <UserPref name="tour_autoplay" display_name="Autoplay tour" datatype="bool"/>
+  <UserPref name="show_navcontrols" display_name="Show navigation controls" datatype="bool"/>
+  <UserPref name="show_buildings" display_name="Show 3D buildings" datatype="bool"/>
+  <UserPref name="show_terrain" display_name="Show terrain" default_value="1" datatype="bool"/>
+  <UserPref name="show_roads" display_name="Show roads" datatype="bool"/>
+  <UserPref name="show_borders" display_name="Show borders and labels" datatype="bool"/>
+  <UserPref name="sphere" display_name="Sphere" default_value="earth" datatype="enum">
+    <EnumValue value="earth" display_value="Earth"/>
+    <EnumValue value="sky" display_value="Sky"/>
+    <EnumValue value="moon" display_value="Moon"/>
+    <EnumValue value="mars" display_value="Mars"/>
+  </UserPref>
+
+  <Content type="html"><![CDATA[
+<script type="text/javascript" src="//www.google.com/jsapi?hl=en&key=ABQIAAAAKkfkHb2nXsD0o1OX2TbdkRTZdFmpiU8vv3PBIA-hr88t-5BzzxQjEeEmKaZUy66ADwTlY8x2M14hHg"></script>
+<script type="text/javascript" src="//code.google.com/apis/kml/embed/lib/kmldomwalk.js"></script>
+<script type="text/javascript">
+  google.load('earth', '1');
+
+  var ge = null;
+  var loadingOverlay = null;
+  var tourObject = null;
+  var fetchedDocument = null;
+  var prefs = new _IG_Prefs();
+  
+  var appPath = 'http://code.google.com/apis/kml/embed/';
+
+  /**
+   * Create the gadget UI, which consists of a Google Earth Plugin instance.
+   */
+  function initGadget() {
+    // Bugfix for IE6.
+    var c = document.getElementById('mapcontainer');
+    while (c && c.offsetParent != c) {
+      c.style.height = '100%';
+      c = c.offsetParent;
+    }
+    
+    // Determine which sphere to create (earth/sky/moon/mars).
+    var createOptions = {};
+    var sphere = prefs.getString('sphere') ||
+                 (prefs.getBool('type_mars') ? 'mars' : 'earth');
+
+    if (sphere == 'mars' || sphere == 'moon')
+      createOptions = { database: 'http://khmdb.google.com/?db=' + sphere };
+
+    // Get the KML URL user pref.
+    var kmlUrl = prefs.getString('kml_url');
+    
+    // Create an instance of the Google Earth Plugin.  
+    google.earth.createInstance('mapcontainer', function(pluginInstance) {
+      ge = pluginInstance;
+      ge.getWindow().setVisibility(true);
+      
+      if (sphere == 'sky')
+        ge.getOptions().setMapType(ge.MAP_TYPE_SKY);
+      
+      // Set options.
+      if (prefs.getBool('show_navcontrols'))
+        ge.getNavigationControl().setVisibility(ge.VISIBILITY_AUTO);
+
+      if (sphere == 'earth') {
+        ge.getLayerRoot().enableLayerById(ge.LAYER_BUILDINGS,
+            prefs.getBool('show_buildings'));
+   
+        ge.getLayerRoot().enableLayerById(ge.LAYER_TERRAIN,
+            prefs.getBool('show_terrain'));
+        
+        ge.getLayerRoot().enableLayerById(ge.LAYER_ROADS,
+            prefs.getBool('show_roads'));
+        
+        ge.getLayerRoot().enableLayerById(ge.LAYER_BORDERS,
+            prefs.getBool('show_borders'));
+      }
+
+      if (kmlUrl) {
+        // Create the loading overlay.
+        loadingOverlay = ge.createScreenOverlay('');
+        loadingOverlay.setIcon(ge.createIcon(''));
+        loadingOverlay.getOverlayXY().set(
+            25, ge.UNITS_PIXELS, 25, ge.UNITS_INSET_PIXELS);
+        loadingOverlay.getScreenXY().set(
+            0, ge.UNITS_FRACTION, 1, ge.UNITS_FRACTION);
+        loadingOverlay.getSize().set(-1, ge.UNITS_FRACTION,
+                                     -1, ge.UNITS_FRACTION);
+        loadingOverlay.getIcon().setHref(appPath + 'res/status-loading.png');
+        ge.getFeatures().appendChild(loadingOverlay);
+        
+        var tourNumber = prefs.getInt('tour_index') || 1;
+
+        google.earth.fetchKml(ge, kmlUrl, function(kmlObject) {
+          if (!kmlObject) {
+            // Couldn't load the KML. Show an error.
+            loadingOverlay.getIcon().setHref(
+                appPath + 'res/status-error-kml.png');
+            return;
+          }
+
+          fetchedDocument = kmlObject;
+          ge.getFeatures().appendChild(fetchedDocument);
+
+          // Walk the loaded KML object hierarchy looking for a <gx:Tour>.
+          var foundTour = false;
+          walkKmlDom(kmlObject, function(context) {
+            if (this.getType() == 'KmlTour' && !--tourNumber) {
+              foundTour = true;
+              ge.getTourPlayer().setTour(this);
+
+              // Hide the loading overlay.
+              if (loadingOverlay)
+                loadingOverlay.setVisibility(false);
+
+              if (prefs.getBool('tour_autoplay'))
+                ge.getTourPlayer().play();
+
+              tourObject = this;
+              return false;
+            }
+          });
+          
+          if (!foundTour) {
+            loadingOverlay.getIcon().setHref(
+                appPath + 'res/status-error-kml.png');
+          }
+        });
+      }
+    }, function(error) { }, createOptions);
+  }
+  
+  google.setOnLoadCallback(initGadget);
+</script>
+<div id="mapcontainer" style="width: 100%; height: 100%;"></div>
+]]></Content>
+</Module>
